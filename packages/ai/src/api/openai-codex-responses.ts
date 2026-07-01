@@ -28,6 +28,7 @@ import type {
 	Context,
 	Model,
 	ProviderEnv,
+	ProviderHeaders,
 	SimpleStreamOptions,
 	StreamFunction,
 	StreamOptions,
@@ -39,6 +40,7 @@ import {
 	createAssistantMessageDiagnostic,
 	formatThrownValue,
 } from "../utils/diagnostics.ts";
+import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { resolveHttpProxyUrlForTarget } from "../utils/node-http-proxy.ts";
@@ -55,9 +57,6 @@ const JWT_CLAIM_PATH = "https://api.openai.com/auth" as const;
 const DEFAULT_MAX_RETRIES = 0;
 const BASE_DELAY_MS = 1000;
 const DEFAULT_MAX_RETRY_DELAY_MS = 60_000;
-// Keep a bounded pre-header timeout so zero-event Codex SSE stalls fail instead of
-// leaving callers stuck on "Working..." indefinitely. See #4945.
-const DEFAULT_SSE_HEADER_TIMEOUT_MS = 20_000;
 const DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS = 15_000;
 const CODEX_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode"]);
 const WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE = 1009;
@@ -178,20 +177,6 @@ function normalizeTimeoutMs(value: number | undefined): number | undefined {
 	return Math.floor(value);
 }
 
-function createSSEHeaderTimeout(): { signal: AbortSignal; clear: () => void; error: () => Error | undefined } {
-	const controller = new AbortController();
-	let error: Error | undefined;
-	const timeout = setTimeout(() => {
-		error = new Error(`Codex SSE response headers timed out after ${DEFAULT_SSE_HEADER_TIMEOUT_MS}ms`);
-		controller.abort(error);
-	}, DEFAULT_SSE_HEADER_TIMEOUT_MS);
-	return {
-		signal: controller.signal,
-		clear: () => clearTimeout(timeout),
-		error: () => error,
-	};
-}
-
 // ============================================================================
 // Main Stream Function
 // ============================================================================
@@ -244,7 +229,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 				websocketRequestId,
 			);
 			const bodyJson = JSON.stringify(body);
-			const idleTimeoutMs = normalizeTimeoutMs(options?.timeoutMs);
+			const httpTimeoutMs = normalizeTimeoutMs(options?.timeoutMs);
 			const websocketConnectTimeoutMs = normalizeTimeoutMs(options?.websocketConnectTimeoutMs);
 			const transport = options?.transport || "auto";
 			const websocketDisabledForSession = transport !== "sse" && isWebSocketSseFallbackActive(options?.sessionId);
@@ -268,7 +253,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 							() => {
 								websocketStarted = true;
 							},
-							idleTimeoutMs,
+							httpTimeoutMs,
 							websocketConnectTimeoutMs,
 							options,
 						);
@@ -324,8 +309,9 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 				}
 
 				try {
-					const headerTimeout = createSSEHeaderTimeout();
-					const combinedSignal = combineAbortSignals([options?.signal, headerTimeout.signal]);
+					const headerTimeoutSignal =
+						httpTimeoutMs !== undefined && httpTimeoutMs > 0 ? AbortSignal.timeout(httpTimeoutMs) : undefined;
+					const combinedSignal = combineAbortSignals([options?.signal, headerTimeoutSignal]);
 					try {
 						response = await fetch(resolveCodexUrl(model.baseUrl), {
 							method: "POST",
@@ -334,11 +320,12 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 							signal: combinedSignal.signal,
 						});
 					} catch (error) {
-						const timeoutError = headerTimeout.error();
-						throw timeoutError && !options?.signal?.aborted ? timeoutError : error;
+						if (headerTimeoutSignal?.aborted && !options?.signal?.aborted) {
+							throw new Error(`Codex SSE response headers timed out after ${httpTimeoutMs}ms`);
+						}
+						throw error;
 					} finally {
 						combinedSignal.cleanup();
-						headerTimeout.clear();
 					}
 					await options?.onResponse?.(
 						{ status: response.status, headers: headersToRecord(response.headers) },
@@ -410,7 +397,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 				delete (block as { partialJson?: string }).partialJson;
 			}
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
-			output.errorMessage = error instanceof Error ? error.message : String(error);
+			output.errorMessage = formatProviderError(normalizeProviderError(error));
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		}
@@ -429,7 +416,7 @@ export const streamSimple: StreamFunction<"openai-codex-responses", SimpleStream
 		throw new Error(`No API key for provider: ${model.provider}`);
 	}
 
-	const base = buildBaseOptions(model, options, apiKey);
+	const base = buildBaseOptions(model, context, options, apiKey);
 	const clampedReasoning = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : undefined;
 	const reasoningEffort = clampedReasoning === "off" ? undefined : clampedReasoning;
 
@@ -1467,13 +1454,17 @@ function createCodexRequestId(): string {
 
 function buildBaseCodexHeaders(
 	initHeaders: Record<string, string> | undefined,
-	additionalHeaders: Record<string, string> | undefined,
+	additionalHeaders: ProviderHeaders | undefined,
 	accountId: string,
 	token: string,
 ): Headers {
 	const headers = new Headers(initHeaders);
 	for (const [key, value] of Object.entries(additionalHeaders || {})) {
-		headers.set(key, value);
+		if (value === null) {
+			headers.delete(key);
+		} else {
+			headers.set(key, value);
+		}
 	}
 	headers.set("Authorization", `Bearer ${token}`);
 	headers.set("chatgpt-account-id", accountId);
@@ -1485,7 +1476,7 @@ function buildBaseCodexHeaders(
 
 function buildSSEHeaders(
 	initHeaders: Record<string, string> | undefined,
-	additionalHeaders: Record<string, string> | undefined,
+	additionalHeaders: ProviderHeaders | undefined,
 	accountId: string,
 	token: string,
 	sessionId?: string,
@@ -1505,7 +1496,7 @@ function buildSSEHeaders(
 
 function buildWebSocketHeaders(
 	initHeaders: Record<string, string> | undefined,
-	additionalHeaders: Record<string, string> | undefined,
+	additionalHeaders: ProviderHeaders | undefined,
 	accountId: string,
 	token: string,
 	requestId: string,
