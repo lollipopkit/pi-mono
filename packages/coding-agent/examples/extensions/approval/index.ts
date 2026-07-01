@@ -24,7 +24,7 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { aiJudge } from "./ai-judge.ts";
+import { type AiVerdict, aiJudge } from "./ai-judge.ts";
 import { type ApprovalConfig, DEFAULT_CONFIG, loadConfig } from "./config.ts";
 import { classify, describeCommand, isInScope, SessionApprovalCache } from "./engine.ts";
 
@@ -88,7 +88,13 @@ export default function approvalExtension(pi: ExtensionAPI): void {
 
 		// 4. AI approval layer (binary allow/deny; errors fall through to the prompt).
 		if (config.aiApproval) {
-			const ai = await aiJudge(ctx, config, toolName, command);
+			ctx.ui.setStatus("approval", "🔐 approval:reviewing…");
+			let ai: AiVerdict;
+			try {
+				ai = await aiJudge(ctx, config, toolName, command);
+			} finally {
+				updateStatus(ctx);
+			}
 			if (ai.decision === "allow") return undefined;
 			if (ai.decision === "deny") {
 				return { block: true, reason: `Blocked by AI approval${ai.reason ? `: ${ai.reason}` : ""}` };

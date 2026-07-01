@@ -24,6 +24,13 @@ describe("isKnownSafeCommand", () => {
 		expect(isKnownSafeCommand("git log --oneline -5")).toBe(true);
 	});
 
+	it("approves additional read-only git subcommands", () => {
+		expect(isKnownSafeCommand("git config --get-regexp user")).toBe(true);
+		expect(isKnownSafeCommand("git version")).toBe(true);
+		expect(isKnownSafeCommand("git diff-index HEAD")).toBe(true);
+		expect(isKnownSafeCommand("git config user.email a@b.c")).toBe(false); // config write
+	});
+
 	it("approves safe composite pipelines", () => {
 		expect(isKnownSafeCommand("ls && grep foo bar.txt")).toBe(true);
 		expect(isKnownSafeCommand("cat a.txt | grep x | wc -l")).toBe(true);
@@ -118,6 +125,14 @@ describe("SessionApprovalCache", () => {
 		expect(cache.has("bash", "make")).toBe(true);
 		expect(cache.has("bash", "make test")).toBe(false);
 		expect(cache.size).toBe(1);
+	});
+
+	it("is whitespace-insensitive", () => {
+		const cache = new SessionApprovalCache();
+		cache.add("bash", "ls -la");
+		expect(cache.has("bash", "ls  -la")).toBe(true);
+		expect(cache.has("bash", " ls -la ")).toBe(true);
+		expect(cache.has("bash", "ls -l")).toBe(false);
 	});
 });
 

@@ -125,6 +125,14 @@ const SAFE_GIT_SUBCOMMANDS = new Set<string>([
 	"merge-base",
 	"show-ref",
 	"count-objects",
+	"version",
+	"var",
+	"check-ignore",
+	"check-attr",
+	"show-branch",
+	"diff-tree",
+	"diff-index",
+	"diff-files",
 ]);
 
 // find options that can write files or execute commands.
@@ -293,7 +301,15 @@ function isSafeExec(args: string[]): boolean {
 		if (!sub) return false;
 		if (sub === "config") {
 			// Only read-only config access.
-			return args.slice(1).some((a) => a === "--get" || a === "--get-all" || a === "--list" || a === "-l");
+			const READONLY_CONFIG_FLAGS = new Set([
+				"--get",
+				"--get-all",
+				"--get-regexp",
+				"--get-urlmatch",
+				"--list",
+				"-l",
+			]);
+			return args.slice(1).some((a) => READONLY_CONFIG_FLAGS.has(a));
 		}
 		return SAFE_GIT_SUBCOMMANDS.has(sub);
 	}

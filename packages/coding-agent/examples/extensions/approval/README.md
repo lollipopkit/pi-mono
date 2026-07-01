@@ -86,3 +86,5 @@ no UI — never silently approves.
   `test/approval-cascade.test.ts`.
 - The cascade never overrides an explicit **deny** — a session approval or an allow
   rule cannot re-enable a denied command.
+- While the AI layer is reviewing, the footer shows `approval:reviewing…`.
+- Session approvals are whitespace-insensitive (`ls -la` == `ls  -la`).
