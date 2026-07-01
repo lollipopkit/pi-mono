@@ -1,0 +1,3 @@
+[submodule "references/codex"]
+	path = references/codex
+	url = https://github.com/openai/codex.git
