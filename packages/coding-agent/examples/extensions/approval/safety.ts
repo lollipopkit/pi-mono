@@ -60,7 +60,6 @@ const SAFE_EXECUTABLES = new Set<string>([
 	"date",
 	"cal",
 	"uptime",
-	"env",
 	"printenv",
 	"tree",
 	"file",
@@ -309,6 +308,16 @@ function isSafeExec(args: string[]): boolean {
 			.some(
 				(a) => a === "-o" || a === "--output" || a.startsWith("--output=") || (a.startsWith("-o") && a !== "-o"),
 			);
+	}
+
+	if (cmd === "fd" || cmd === "fdfind") {
+		// fd can run a command per match (-x/--exec, -X/--exec-batch), like find -exec.
+		return !args.slice(1).some((a) => a === "-x" || a === "--exec" || a === "-X" || a === "--exec-batch");
+	}
+
+	if (cmd === "yq") {
+		// yq -i / --inplace rewrites files. jq has no in-place mode, so it stays safe.
+		return !args.slice(1).some((a) => a === "-i" || a === "--inplace");
 	}
 
 	return SAFE_EXECUTABLES.has(cmd);

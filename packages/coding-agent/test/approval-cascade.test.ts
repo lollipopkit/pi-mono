@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { parseVerdict } from "../examples/extensions/approval/ai-judge.ts";
 import type { ApprovalConfig } from "../examples/extensions/approval/config.ts";
 import { classify, describeCommand, isInScope, SessionApprovalCache } from "../examples/extensions/approval/engine.ts";
 import { DEFAULT_DENY_RULES, isKnownSafeCommand } from "../examples/extensions/approval/safety.ts";
@@ -43,6 +44,18 @@ describe("isKnownSafeCommand", () => {
 
 	it("rejects safe-looking prefix with unsafe pipeline member", () => {
 		expect(isKnownSafeCommand("ls && rm -rf /")).toBe(false);
+	});
+
+	it("does not treat command/write wrappers as safe", () => {
+		expect(isKnownSafeCommand("env rm -rf build")).toBe(false); // env runs a command
+		expect(isKnownSafeCommand("env FOO=bar ls")).toBe(false);
+		expect(isKnownSafeCommand("fd . -x rm")).toBe(false); // fd -x executes per match
+		expect(isKnownSafeCommand("fd --exec rm pattern")).toBe(false);
+		expect(isKnownSafeCommand("yq -i '.a=1' file.yaml")).toBe(false); // yq -i writes in place
+		// plain read-only usages of the same tools stay safe
+		expect(isKnownSafeCommand("fd -e ts src")).toBe(true);
+		expect(isKnownSafeCommand("yq '.a' file.yaml")).toBe(true);
+		expect(isKnownSafeCommand("printenv PATH")).toBe(true);
 	});
 });
 
@@ -105,5 +118,23 @@ describe("SessionApprovalCache", () => {
 		expect(cache.has("bash", "make")).toBe(true);
 		expect(cache.has("bash", "make test")).toBe(false);
 		expect(cache.size).toBe(1);
+	});
+});
+
+describe("parseVerdict", () => {
+	it("parses strict JSON verdicts", () => {
+		expect(parseVerdict('{"decision":"allow","reason":"ok"}').decision).toBe("allow");
+		expect(parseVerdict('here you go: {"decision":"deny","reason":"rm -rf"}').decision).toBe("deny");
+	});
+
+	it("accepts an unambiguous bare token", () => {
+		expect(parseVerdict("allow").decision).toBe("allow");
+		expect(parseVerdict("DENY.").decision).toBe("deny");
+	});
+
+	it("never guesses from prose — escalates instead", () => {
+		expect(parseVerdict("this is not safe").decision).toBe("error");
+		expect(parseVerdict("I think you can allow this").decision).toBe("error");
+		expect(parseVerdict("").decision).toBe("error");
 	});
 });

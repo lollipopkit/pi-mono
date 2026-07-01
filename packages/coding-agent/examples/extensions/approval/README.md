@@ -15,7 +15,9 @@ For each in-scope tool call, in order:
 
 1. **Deny rule match** → reject (deny always wins, even over a session approval).
 2. **Known-safe command** → auto-approve. Read-only bash commands only
-   (`cat`, `ls`, `grep`, `git status`, `find` without `-exec/-delete`, …).
+   (`cat`, `ls`, `grep`, `git status`, …). Command/write wrappers are excluded:
+   `find`/`fd` with `-exec`/`-x`, `yq -i`, `sort -o`, `env <cmd>`, redirection,
+   command/variable substitution, subshells and backgrounding are never auto-safe.
 3. **Allow rule match** → auto-approve.
 4. **AI approval** (opt-in) → an LLM returns `allow` / `deny`.
 5. **Fallback** → prompt you. With no interactive UI (e.g. `pi -p`), it rejects.

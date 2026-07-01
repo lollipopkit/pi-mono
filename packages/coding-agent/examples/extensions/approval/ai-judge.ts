@@ -29,6 +29,9 @@ or write outside the working directory. Allow ordinary, reversible development a
 Respond with ONLY a compact JSON object, no prose:
 {"decision":"allow"|"deny","reason":"<short reason>"}`;
 
+/** Max time to wait for the AI judge before treating it as an error (falls back to prompt/deny). */
+const AI_TIMEOUT_MS = 20_000;
+
 /** Resolve a model reference: bare id, "provider/id", or model name. */
 function resolveModelRef(ctx: ExtensionContext, ref: string): Model<Api> | undefined {
 	const all = ctx.modelRegistry.getAll();
@@ -59,7 +62,7 @@ function extractText(content: { type: string }[]): string {
 		.join("\n");
 }
 
-function parseVerdict(text: string): AiVerdict {
+export function parseVerdict(text: string): AiVerdict {
 	const jsonMatch = text.match(/\{[^{}]*"decision"[^{}]*\}/);
 	if (jsonMatch) {
 		try {
@@ -68,14 +71,18 @@ function parseVerdict(text: string): AiVerdict {
 				return { decision: parsed.decision, reason: parsed.reason };
 			}
 		} catch {
-			// fall through to keyword heuristics
+			// fall through to the conservative token check
 		}
 	}
-	const lower = text.toLowerCase();
-	const deny = /\b(deny|denied|reject|rejected|block|blocked|unsafe|dangerous)\b/.test(lower);
-	const allow = /\b(allow|allowed|approve|approved|safe)\b/.test(lower);
-	if (allow && !deny) return { decision: "allow" };
-	if (deny && !allow) return { decision: "deny" };
+	// Conservative fallback: only accept an unambiguous bare token. Prose like
+	// "not safe" must NOT be guessed — return error so the caller escalates to the
+	// user (or denies with no UI) rather than risk a false auto-approve.
+	const token = text
+		.trim()
+		.toLowerCase()
+		.replace(/^["'`]+|["'`.\s]+$/g, "");
+	if (token === "allow") return { decision: "allow" };
+	if (token === "deny") return { decision: "deny" };
 	return { decision: "error", reason: "unparseable AI response" };
 }
 
@@ -103,15 +110,26 @@ export async function aiJudge(
 		timestamp: Date.now(),
 	};
 
+	// Bound the review so a hung request can't block the tool call forever.
+	// Combine the agent's abort signal with our own timeout.
+	const controller = new AbortController();
+	const onParentAbort = () => controller.abort();
+	if (ctx.signal?.aborted) controller.abort();
+	else ctx.signal?.addEventListener("abort", onParentAbort, { once: true });
+	const timer = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
+
 	try {
 		const response = await complete(
 			model,
 			{ systemPrompt: JUDGE_SYSTEM_PROMPT, messages: [userMessage] },
-			{ apiKey: auth.apiKey, headers: auth.headers, env: auth.env, signal: ctx.signal },
+			{ apiKey: auth.apiKey, headers: auth.headers, env: auth.env, signal: controller.signal },
 		);
-		if (response.stopReason === "aborted") return { decision: "error", reason: "aborted" };
+		if (response.stopReason === "aborted") return { decision: "error", reason: "aborted or timed out" };
 		return parseVerdict(extractText(response.content));
 	} catch (err) {
 		return { decision: "error", reason: err instanceof Error ? err.message : String(err) };
+	} finally {
+		clearTimeout(timer);
+		ctx.signal?.removeEventListener("abort", onParentAbort);
 	}
 }

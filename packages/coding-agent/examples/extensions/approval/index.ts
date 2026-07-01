@@ -25,19 +25,12 @@
 
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { aiJudge } from "./ai-judge.ts";
-import { type ApprovalConfig, loadConfig } from "./config.ts";
+import { type ApprovalConfig, DEFAULT_CONFIG, loadConfig } from "./config.ts";
 import { classify, describeCommand, isInScope, SessionApprovalCache } from "./engine.ts";
 
 export default function approvalExtension(pi: ExtensionAPI): void {
-	let config: ApprovalConfig = {
-		enabled: true,
-		aiApproval: false,
-		aiModel: null,
-		tools: ["bash", "edit", "write"],
-		allow: [],
-		deny: [],
-		rememberForSession: true,
-	};
+	// Placeholder until session_start loads the real config; already carries the default deny list.
+	let config: ApprovalConfig = { ...DEFAULT_CONFIG };
 	const sessionCache = new SessionApprovalCache();
 
 	pi.registerFlag("no-approval", {
